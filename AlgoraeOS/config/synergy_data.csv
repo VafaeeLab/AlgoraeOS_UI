@@ -1,0 +1,12 @@
+drug_1,drug_2,cell_line,bliss,loewe,hsa,zip
+Everolimus,Capivasertib,A549,0.42,0.38,0.51,0.45
+Everolimus,Capivasertib,MDA-MB-231,0.38,0.35,0.47,0.41
+Everolimus,Capivasertib,HCT116,0.45,0.41,0.53,0.48
+Cisplatin,PD0325901,A549,0.35,0.41,0.38,0.40
+Cisplatin,PD0325901,MDA-MB-231,0.32,0.38,0.35,0.37
+Cisplatin,PD0325901,HCT116,0.40,0.44,0.42,0.43
+Everolimus,Cisplatin,A549,0.28,0.32,0.29,0.31
+Everolimus,Cisplatin,MDA-MB-231,0.31,0.35,0.33,0.34
+Everolimus,Cisplatin,HCT116,0.26,0.30,0.27,0.29
+Doxorubicin,Paclitaxel,MCF7,0.55,0.52,0.58,0.56
+Doxorubicin,Paclitaxel,HeLa,0.48,0.45,0.51,0.49
