@@ -1,11 +1,34 @@
 // ============================================================================
-// DRUG SYNERGY STUDIO - Main Application Logic
+// ALGORAEOS - AI-Powered Drug Combination Analysis
 // ============================================================================
 
 // Global State Variables
 let synergyDatabase = [];
 let drugs = [];
 let radarChart = null;
+
+// Sample database content (fallback for first-time users)
+const SAMPLE_DATABASE = `drug_1,drug_2,cell_line,bliss,loewe,hsa,zip,bliss_uncertainty,loewe_uncertainty,hsa_uncertainty,zip_uncertainty
+Everolimus,Capivasertib,A549,0.42,0.38,0.51,0.45,0.05,0.04,0.06,0.05
+Everolimus,Capivasertib,MDA-MB-231,0.38,0.35,0.47,0.41,0.04,0.05,0.05,0.04
+Everolimus,Capivasertib,HCT116,0.45,0.41,0.53,0.48,0.06,0.05,0.07,0.06
+Cisplatin,PD0325901,A549,0.35,0.41,0.38,0.40,0.03,0.04,0.04,0.03
+Cisplatin,PD0325901,MDA-MB-231,0.32,0.38,0.35,0.37,0.04,0.05,0.04,0.04
+Cisplatin,PD0325901,HCT116,0.40,0.44,0.42,0.43,0.05,0.06,0.05,0.05
+Everolimus,Cisplatin,A549,0.28,0.32,0.29,0.31,0.03,0.04,0.03,0.03
+Everolimus,Cisplatin,MDA-MB-231,0.31,0.35,0.33,0.34,0.04,0.04,0.04,0.04
+Everolimus,Cisplatin,HCT116,0.26,0.30,0.27,0.29,0.03,0.03,0.03,0.03
+Doxorubicin,Paclitaxel,MCF7,0.55,0.52,0.58,0.56,0.07,0.06,0.08,0.07
+Doxorubicin,Paclitaxel,HeLa,0.48,0.45,0.51,0.49,0.06,0.05,0.06,0.06
+Capivasertib,PD0325901,A549,0.51,0.47,0.54,0.52,0.06,0.05,0.07,0.06
+Capivasertib,PD0325901,HCT116,0.46,0.43,0.49,0.47,0.05,0.05,0.06,0.05
+Temozolomide,Olaparib,U87MG,0.39,0.42,0.41,0.40,0.04,0.05,0.04,0.04
+Temozolomide,Olaparib,LN229,0.44,0.47,0.46,0.45,0.05,0.06,0.05,0.05
+Gefitinib,Trametinib,H1975,0.48,0.45,0.50,0.47,0.06,0.05,0.06,0.06
+Gefitinib,Trametinib,PC9,0.52,0.49,0.54,0.51,0.07,0.06,0.07,0.07
+Carboplatin,Gemcitabine,PANC1,0.41,0.38,0.43,0.40,0.05,0.04,0.05,0.05
+Carboplatin,Gemcitabine,MiaPaCa2,0.37,0.35,0.39,0.36,0.04,0.04,0.04,0.04
+5-FU,Oxaliplatin,HT29,0.46,0.43,0.48,0.45,0.06,0.05,0.06,0.06`;
 
 // ============================================================================
 // INITIALIZATION
@@ -16,32 +39,84 @@ window.addEventListener('DOMContentLoaded', () => {
     loadDatabase();
 });
 
-// Load synergy database from localStorage
+// Load synergy database from localStorage or sample data
 function loadDatabase() {
     const storedData = localStorage.getItem('synergyDatabase');
     
     if (storedData) {
         try {
             synergyDatabase = JSON.parse(storedData);
-            console.log('✓ Database loaded:', synergyDatabase.length, 'entries');
-            
-            // Check if database has uncertainty data
-            if (synergyDatabase.length > 0) {
-                const hasUncertainties = synergyDatabase[0].bliss_uncertainty !== undefined;
-                console.log('Database has uncertainties:', hasUncertainties);
-            }
-            
-            // Extract unique values and populate dropdowns
-            extractUniqueValues();
-            populateDropdowns();
+            console.log('✓ Database loaded from localStorage:', synergyDatabase.length, 'entries');
         } catch (error) {
-            console.error('Error parsing database:', error);
-            alert('Error loading database. Please contact the administrator.');
+            console.error('Error parsing stored database:', error);
+            loadSampleDatabase();
         }
     } else {
-        console.warn('⚠ No database found in localStorage');
-        alert('No database loaded. Please contact the administrator to upload the database via the admin panel.');
+        console.log('⚠ No database found in localStorage, loading sample data');
+        loadSampleDatabase();
     }
+    
+    // Initialize UI
+    extractUniqueValues();
+    populateDropdowns();
+    showDatabaseInfo();
+}
+
+// Load and parse sample database
+function loadSampleDatabase() {
+    try {
+        synergyDatabase = parseCSVData(SAMPLE_DATABASE);
+        localStorage.setItem('synergyDatabase', JSON.stringify(synergyDatabase));
+        console.log('✓ Sample database loaded:', synergyDatabase.length, 'entries');
+    } catch (error) {
+        console.error('Error loading sample database:', error);
+        alert('Error loading database. Please contact the administrator.');
+    }
+}
+
+// Parse CSV data into database entries
+function parseCSVData(csvContent) {
+    const lines = csvContent.trim().split('\n');
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    const data = [];
+    
+    for (let i = 1; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        
+        const values = lines[i].split(',').map(v => v.trim());
+        const entry = {};
+        
+        headers.forEach((header, index) => {
+            if (['bliss', 'loewe', 'hsa', 'zip', 'bliss_uncertainty', 'loewe_uncertainty', 'hsa_uncertainty', 'zip_uncertainty'].includes(header)) {
+                entry[header] = parseFloat(values[index]);
+            } else {
+                entry[header] = values[index];
+            }
+        });
+        
+        // Validate entry
+        if (entry.drug_1 && entry.drug_2 && entry.cell_line &&
+            !isNaN(entry.bliss) && !isNaN(entry.loewe) && 
+            !isNaN(entry.hsa) && !isNaN(entry.zip)) {
+            data.push(entry);
+        }
+    }
+    
+    return data;
+}
+
+// Show database information
+function showDatabaseInfo() {
+    const uniqueDrugs = new Set();
+    const uniqueCells = new Set();
+    
+    synergyDatabase.forEach(entry => {
+        uniqueDrugs.add(entry.drug_1);
+        uniqueDrugs.add(entry.drug_2);
+        uniqueCells.add(entry.cell_line);
+    });
+    
+    console.log(`📊 Database loaded: ${synergyDatabase.length} combinations, ${uniqueDrugs.size} drugs, ${uniqueCells.size} cell lines`);
 }
 
 // ============================================================================
@@ -202,7 +277,7 @@ function switchMode(mode) {
 
 // Predict synergy for single query
 function predictSynergy() {
-    console.log('Predict button clicked');
+    console.log('🔍 Predict button clicked');
     
     const drug1 = document.getElementById('drug1').value;
     const drug2 = document.getElementById('drug2').value;
@@ -227,8 +302,8 @@ function predictSynergy() {
         console.log('✓ Result found:', result);
         displayResults(result);
     } else {
-        console.error('✗ No result found for:', drug1, drug2, cellLine);
-        alert('No data found for this combination.');
+        console.log('✗ No result found for combination');
+        alert(`No data found for the combination:\n${drug1} + ${drug2} in ${cellLine}\n\nTry a different combination or contact the administrator to add this data.`);
         const resultsDiv = document.getElementById('results');
         if (resultsDiv) {
             resultsDiv.style.display = 'none';
@@ -603,8 +678,16 @@ function hideAbout() {
     modal.classList.remove('active');
 }
 
+// Close modal when clicking outside
+window.addEventListener('click', function(event) {
+    const modal = document.getElementById('about-modal');
+    if (event.target === modal) {
+        hideAbout();
+    }
+});
+
 // ============================================================================
 // END
 // ============================================================================
 
-console.log('✓ Drug Synergy Studio loaded');
+console.log('🚀 AlgoraeOS loaded successfully!');
