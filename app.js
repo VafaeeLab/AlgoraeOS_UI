@@ -1,34 +1,13 @@
 // ============================================================================
-// ALGORAEOS - AI-Powered Drug Combination Analysis
+// ALGORAEOS - AI-Powered Drug Combination Analysis (API Version)
 // ============================================================================
 
+// Configuration
+const API_BASE_URL = 'http://localhost:5000/api';
+
 // Global State Variables
-let synergyDatabase = [];
 let drugs = [];
 let radarChart = null;
-
-// Sample database content (fallback for first-time users)
-const SAMPLE_DATABASE = `drug_1,drug_2,cell_line,bliss,loewe,hsa,zip,bliss_uncertainty,loewe_uncertainty,hsa_uncertainty,zip_uncertainty
-Everolimus,Capivasertib,A549,0.42,0.38,0.51,0.45,0.05,0.04,0.06,0.05
-Everolimus,Capivasertib,MDA-MB-231,0.38,0.35,0.47,0.41,0.04,0.05,0.05,0.04
-Everolimus,Capivasertib,HCT116,0.45,0.41,0.53,0.48,0.06,0.05,0.07,0.06
-Cisplatin,PD0325901,A549,0.35,0.41,0.38,0.40,0.03,0.04,0.04,0.03
-Cisplatin,PD0325901,MDA-MB-231,0.32,0.38,0.35,0.37,0.04,0.05,0.04,0.04
-Cisplatin,PD0325901,HCT116,0.40,0.44,0.42,0.43,0.05,0.06,0.05,0.05
-Everolimus,Cisplatin,A549,0.28,0.32,0.29,0.31,0.03,0.04,0.03,0.03
-Everolimus,Cisplatin,MDA-MB-231,0.31,0.35,0.33,0.34,0.04,0.04,0.04,0.04
-Everolimus,Cisplatin,HCT116,0.26,0.30,0.27,0.29,0.03,0.03,0.03,0.03
-Doxorubicin,Paclitaxel,MCF7,0.55,0.52,0.58,0.56,0.07,0.06,0.08,0.07
-Doxorubicin,Paclitaxel,HeLa,0.48,0.45,0.51,0.49,0.06,0.05,0.06,0.06
-Capivasertib,PD0325901,A549,0.51,0.47,0.54,0.52,0.06,0.05,0.07,0.06
-Capivasertib,PD0325901,HCT116,0.46,0.43,0.49,0.47,0.05,0.05,0.06,0.05
-Temozolomide,Olaparib,U87MG,0.39,0.42,0.41,0.40,0.04,0.05,0.04,0.04
-Temozolomide,Olaparib,LN229,0.44,0.47,0.46,0.45,0.05,0.06,0.05,0.05
-Gefitinib,Trametinib,H1975,0.48,0.45,0.50,0.47,0.06,0.05,0.06,0.06
-Gefitinib,Trametinib,PC9,0.52,0.49,0.54,0.51,0.07,0.06,0.07,0.07
-Carboplatin,Gemcitabine,PANC1,0.41,0.38,0.43,0.40,0.05,0.04,0.05,0.05
-Carboplatin,Gemcitabine,MiaPaCa2,0.37,0.35,0.39,0.36,0.04,0.04,0.04,0.04
-5-FU,Oxaliplatin,HT29,0.46,0.43,0.48,0.45,0.06,0.05,0.06,0.06`;
 
 // ============================================================================
 // INITIALIZATION
@@ -36,113 +15,62 @@ Carboplatin,Gemcitabine,MiaPaCa2,0.37,0.35,0.39,0.36,0.04,0.04,0.04,0.04
 
 // Load data when page loads
 window.addEventListener('DOMContentLoaded', () => {
-    loadDatabase();
+    initializeApp();
 });
 
-// Load synergy database from localStorage or sample data
-function loadDatabase() {
-    const storedData = localStorage.getItem('synergyDatabase');
+// Initialize application
+async function initializeApp() {
+    console.log('🚀 Initializing AlgoraeOS...');
     
-    if (storedData) {
-        try {
-            synergyDatabase = JSON.parse(storedData);
-            console.log('✓ Database loaded from localStorage:', synergyDatabase.length, 'entries');
-        } catch (error) {
-            console.error('Error parsing stored database:', error);
-            loadSampleDatabase();
-        }
-    } else {
-        console.log('⚠ No database found in localStorage, loading sample data');
-        loadSampleDatabase();
+    // Check API health
+    const isHealthy = await checkAPIHealth();
+    
+    if (!isHealthy) {
+        showError('Unable to connect to database server. Please ensure the server is running.');
+        return;
     }
     
-    // Initialize UI
-    extractUniqueValues();
-    populateDropdowns();
-    showDatabaseInfo();
+    // Load drugs for Drug 1 dropdown
+    await loadDrugs();
+    
+    // Set up event listeners
+    setupEventListeners();
+    
+    console.log('✓ AlgoraeOS initialized successfully');
 }
 
-// Load and parse sample database
-function loadSampleDatabase() {
+// Check if API is accessible
+async function checkAPIHealth() {
     try {
-        synergyDatabase = parseCSVData(SAMPLE_DATABASE);
-        localStorage.setItem('synergyDatabase', JSON.stringify(synergyDatabase));
-        console.log('✓ Sample database loaded:', synergyDatabase.length, 'entries');
+        const response = await fetch(`${API_BASE_URL}/health`);
+        const data = await response.json();
+        console.log('✓ API Health:', data);
+        return data.status === 'healthy';
     } catch (error) {
-        console.error('Error loading sample database:', error);
-        alert('Error loading database. Please contact the administrator.');
+        console.error('✗ API Health Check Failed:', error);
+        return false;
     }
 }
 
-// Parse CSV data into database entries
-function parseCSVData(csvContent) {
-    const lines = csvContent.trim().split('\n');
-    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-    const data = [];
-    
-    for (let i = 1; i < lines.length; i++) {
-        if (!lines[i].trim()) continue;
-        
-        const values = lines[i].split(',').map(v => v.trim());
-        const entry = {};
-        
-        headers.forEach((header, index) => {
-            if (['bliss', 'loewe', 'hsa', 'zip', 'bliss_uncertainty', 'loewe_uncertainty', 'hsa_uncertainty', 'zip_uncertainty'].includes(header)) {
-                entry[header] = parseFloat(values[index]);
-            } else {
-                entry[header] = values[index];
-            }
-        });
-        
-        // Validate entry
-        if (entry.drug_1 && entry.drug_2 && entry.cell_line &&
-            !isNaN(entry.bliss) && !isNaN(entry.loewe) && 
-            !isNaN(entry.hsa) && !isNaN(entry.zip)) {
-            data.push(entry);
-        }
+// Load all drugs from API
+async function loadDrugs() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/drugs/all`);
+        drugs = await response.json();
+        console.log('✓ Loaded', drugs.length, 'drugs');
+        populateDrug1Dropdown();
+    } catch (error) {
+        console.error('Error loading drugs:', error);
+        showError('Failed to load drugs from database');
     }
-    
-    return data;
-}
-
-// Show database information
-function showDatabaseInfo() {
-    const uniqueDrugs = new Set();
-    const uniqueCells = new Set();
-    
-    synergyDatabase.forEach(entry => {
-        uniqueDrugs.add(entry.drug_1);
-        uniqueDrugs.add(entry.drug_2);
-        uniqueCells.add(entry.cell_line);
-    });
-    
-    console.log(`📊 Database loaded: ${synergyDatabase.length} combinations, ${uniqueDrugs.size} drugs, ${uniqueCells.size} cell lines`);
 }
 
 // ============================================================================
-// DATA EXTRACTION
+// DROPDOWN MANAGEMENT (Cascading with API)
 // ============================================================================
 
-// Extract unique drugs from drug_1 column only
-function extractUniqueValues() {
-    const drug1Set = new Set();
-    
-    synergyDatabase.forEach(entry => {
-        if (entry.drug_1) {
-            drug1Set.add(entry.drug_1);
-        }
-    });
-    
-    drugs = Array.from(drug1Set).sort();
-    console.log('✓ Extracted', drugs.length, 'unique drugs');
-}
-
-// ============================================================================
-// DROPDOWN MANAGEMENT (Cascading)
-// ============================================================================
-
-// Populate Drug 1 dropdown and set up event listeners
-function populateDropdowns() {
+// Populate Drug 1 dropdown
+function populateDrug1Dropdown() {
     const drug1Select = document.getElementById('drug1');
     
     if (!drug1Select) {
@@ -160,19 +88,25 @@ function populateDropdowns() {
         drug1Select.appendChild(option);
     });
     
-    // Add event listeners for cascading dropdowns
-    drug1Select.addEventListener('change', onDrug1Change);
-    
+    console.log('✓ Drug 1 dropdown populated');
+}
+
+// Set up event listeners
+function setupEventListeners() {
+    const drug1Select = document.getElementById('drug1');
     const drug2Select = document.getElementById('drug2');
+    
+    if (drug1Select) {
+        drug1Select.addEventListener('change', onDrug1Change);
+    }
+    
     if (drug2Select) {
         drug2Select.addEventListener('change', onDrug2Change);
     }
-    
-    console.log('✓ Dropdowns initialized');
 }
 
 // Handle Drug 1 selection change
-function onDrug1Change() {
+async function onDrug1Change() {
     const drug1 = document.getElementById('drug1').value;
     const drug2Select = document.getElementById('drug2');
     const cellLineSelect = document.getElementById('cellLine');
@@ -184,35 +118,36 @@ function onDrug1Change() {
     cellLineSelect.disabled = true;
     
     // Hide results
-    const resultsDiv = document.getElementById('results');
-    if (resultsDiv) {
-        resultsDiv.style.display = 'none';
-    }
+    hideResults();
     
     if (!drug1) return;
     
-    // Find all drug_2 values that pair with selected drug_1
-    const drug2Set = new Set();
-    synergyDatabase.forEach(entry => {
-        if (entry.drug_1 === drug1) {
-            drug2Set.add(entry.drug_2);
-        }
-    });
+    // Show loading state
+    drug2Select.innerHTML = '<option value="">Loading...</option>';
     
-    // Populate Drug 2 dropdown
-    const drug2Options = Array.from(drug2Set).sort();
-    drug2Options.forEach(drug => {
-        const option = document.createElement('option');
-        option.value = drug;
-        option.textContent = drug;
-        drug2Select.appendChild(option);
-    });
-    
-    console.log('✓ Drug 2 options updated:', drug2Options.length, 'available');
+    try {
+        // Fetch drug partners from API
+        const response = await fetch(`${API_BASE_URL}/drugs/partners?drug1=${encodeURIComponent(drug1)}`);
+        const partners = await response.json();
+        
+        // Populate Drug 2 dropdown
+        drug2Select.innerHTML = '<option value="">Select second drug...</option>';
+        partners.forEach(drug => {
+            const option = document.createElement('option');
+            option.value = drug;
+            option.textContent = drug;
+            drug2Select.appendChild(option);
+        });
+        
+        console.log('✓ Drug 2 options updated:', partners.length, 'available');
+    } catch (error) {
+        console.error('Error loading drug partners:', error);
+        drug2Select.innerHTML = '<option value="">Error loading options</option>';
+    }
 }
 
 // Handle Drug 2 selection change
-function onDrug2Change() {
+async function onDrug2Change() {
     const drug1 = document.getElementById('drug1').value;
     const drug2 = document.getElementById('drug2').value;
     const cellLineSelect = document.getElementById('cellLine');
@@ -222,31 +157,34 @@ function onDrug2Change() {
     cellLineSelect.disabled = !drug2;
     
     // Hide results
-    const resultsDiv = document.getElementById('results');
-    if (resultsDiv) {
-        resultsDiv.style.display = 'none';
-    }
+    hideResults();
     
     if (!drug1 || !drug2) return;
     
-    // Find all cell_line values for this drug combination
-    const cellSet = new Set();
-    synergyDatabase.forEach(entry => {
-        if (entry.drug_1 === drug1 && entry.drug_2 === drug2) {
-            cellSet.add(entry.cell_line);
-        }
-    });
+    // Show loading state
+    cellLineSelect.innerHTML = '<option value="">Loading...</option>';
     
-    // Populate Cell Line dropdown
-    const cellOptions = Array.from(cellSet).sort();
-    cellOptions.forEach(cell => {
-        const option = document.createElement('option');
-        option.value = cell;
-        option.textContent = cell;
-        cellLineSelect.appendChild(option);
-    });
-    
-    console.log('✓ Cell Line options updated:', cellOptions.length, 'available');
+    try {
+        // Fetch cell lines from API
+        const response = await fetch(
+            `${API_BASE_URL}/celllines?drug1=${encodeURIComponent(drug1)}&drug2=${encodeURIComponent(drug2)}`
+        );
+        const celllines = await response.json();
+        
+        // Populate Cell Line dropdown
+        cellLineSelect.innerHTML = '<option value="">Select cell line...</option>';
+        celllines.forEach(cell => {
+            const option = document.createElement('option');
+            option.value = cell;
+            option.textContent = cell;
+            cellLineSelect.appendChild(option);
+        });
+        
+        console.log('✓ Cell Line options updated:', celllines.length, 'available');
+    } catch (error) {
+        console.error('Error loading cell lines:', error);
+        cellLineSelect.innerHTML = '<option value="">Error loading options</option>';
+    }
 }
 
 // ============================================================================
@@ -276,7 +214,7 @@ function switchMode(mode) {
 // ============================================================================
 
 // Predict synergy for single query
-function predictSynergy() {
+async function predictSynergy() {
     console.log('🔍 Predict button clicked');
     
     const drug1 = document.getElementById('drug1').value;
@@ -291,24 +229,93 @@ function predictSynergy() {
         return;
     }
     
-    // Search database
-    const result = synergyDatabase.find(
-        entry => entry.drug_1 === drug1 && 
-                 entry.drug_2 === drug2 && 
-                 entry.cell_line === cellLine
-    );
+    // Show loading state
+    const resultsDiv = document.getElementById('results');
+    resultsDiv.style.display = 'block';
+    resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem;"><p>Loading...</p></div>';
     
-    if (result) {
-        console.log('✓ Result found:', result);
-        displayResults(result);
-    } else {
-        console.log('✗ No result found for combination');
-        alert(`No data found for the combination:\n${drug1} + ${drug2} in ${cellLine}\n\nTry a different combination or contact the administrator to add this data.`);
-        const resultsDiv = document.getElementById('results');
-        if (resultsDiv) {
-            resultsDiv.style.display = 'none';
+    try {
+        // Query API
+        const response = await fetch(
+            `${API_BASE_URL}/synergy?drug1=${encodeURIComponent(drug1)}&drug2=${encodeURIComponent(drug2)}&cellline=${encodeURIComponent(cellLine)}`
+        );
+        
+        if (!response.ok) {
+            throw new Error('Combination not found');
         }
+        
+        const result = await response.json();
+        console.log('✓ Result found:', result);
+        
+        // Restore results HTML structure
+        resultsDiv.innerHTML = getResultsHTML();
+        
+        // Display results
+        displayResults(result);
+    } catch (error) {
+        console.log('✗ Error:', error);
+        resultsDiv.style.display = 'none';
+        alert(`No data found for the combination:\n${drug1} + ${drug2} in ${cellLine}\n\nTry a different combination or contact the administrator to add this data.`);
     }
+}
+
+// Get results HTML structure
+function getResultsHTML() {
+    return `
+        <div class="results-header">
+            <h4>Synergy Scores</h4>
+        </div>
+        <div class="results-grid">
+            <div class="metrics-panel">
+                <div class="metric-card metric-bliss">
+                    <div class="metric-header">
+                        <span class="metric-name">Bliss</span>
+                        <div class="metric-value-group">
+                            <span class="metric-value" id="bliss-value">-</span>
+                            <span class="metric-uncertainty" id="bliss-uncertainty"></span>
+                        </div>
+                    </div>
+                    <p class="metric-desc">Independence model</p>
+                </div>
+                <div class="metric-card metric-loewe">
+                    <div class="metric-header">
+                        <span class="metric-name">Loewe</span>
+                        <div class="metric-value-group">
+                            <span class="metric-value" id="loewe-value">-</span>
+                            <span class="metric-uncertainty" id="loewe-uncertainty"></span>
+                        </div>
+                    </div>
+                    <p class="metric-desc">Additivity reference</p>
+                </div>
+                <div class="metric-card metric-hsa">
+                    <div class="metric-header">
+                        <span class="metric-name">HSA</span>
+                        <div class="metric-value-group">
+                            <span class="metric-value" id="hsa-value">-</span>
+                            <span class="metric-uncertainty" id="hsa-uncertainty"></span>
+                        </div>
+                    </div>
+                    <p class="metric-desc">Highest single agent</p>
+                </div>
+                <div class="metric-card metric-zip">
+                    <div class="metric-header">
+                        <span class="metric-name">ZIP</span>
+                        <div class="metric-value-group">
+                            <span class="metric-value" id="zip-value">-</span>
+                            <span class="metric-uncertainty" id="zip-uncertainty"></span>
+                        </div>
+                    </div>
+                    <p class="metric-desc">Zero interaction potency</p>
+                </div>
+            </div>
+            <div class="chart-panel">
+                <canvas id="radarChart"></canvas>
+            </div>
+        </div>
+        <div class="info-banner">
+            <strong>Note:</strong> Scores depend on assay normalization; interpret within context.
+        </div>
+    `;
 }
 
 // Display results with uncertainties
@@ -317,55 +324,23 @@ function displayResults(result) {
     
     try {
         // Display main values
-        const blissValue = document.getElementById('bliss-value');
-        const loeweValue = document.getElementById('loewe-value');
-        const hsaValue = document.getElementById('hsa-value');
-        const zipValue = document.getElementById('zip-value');
+        document.getElementById('bliss-value').textContent = result.bliss.toFixed(3);
+        document.getElementById('loewe-value').textContent = result.loewe.toFixed(3);
+        document.getElementById('hsa-value').textContent = result.hsa.toFixed(3);
+        document.getElementById('zip-value').textContent = result.zip.toFixed(3);
         
-        if (!blissValue) {
-            console.error('Result elements not found!');
-            return;
+        // Display uncertainties
+        const blissUncertainty = document.getElementById('bliss-uncertainty');
+        const loeweUncertainty = document.getElementById('loewe-uncertainty');
+        const hsaUncertainty = document.getElementById('hsa-uncertainty');
+        const zipUncertainty = document.getElementById('zip-uncertainty');
+        
+        if (result.bliss_uncertainty !== null && result.bliss_uncertainty !== undefined) {
+            blissUncertainty.textContent = `±${result.bliss_uncertainty.toFixed(3)}`;
+            loeweUncertainty.textContent = `±${result.loewe_uncertainty.toFixed(3)}`;
+            hsaUncertainty.textContent = `±${result.hsa_uncertainty.toFixed(3)}`;
+            zipUncertainty.textContent = `±${result.zip_uncertainty.toFixed(3)}`;
         }
-        
-        blissValue.textContent = result.bliss.toFixed(3);
-        loeweValue.textContent = result.loewe.toFixed(3);
-        hsaValue.textContent = result.hsa.toFixed(3);
-        zipValue.textContent = result.zip.toFixed(3);
-        
-        // Display uncertainties (handle missing data)
-		// Display uncertainties (handle missing data and type conversion)
-		const blissUncertainty = document.getElementById('bliss-uncertainty');
-		const loeweUncertainty = document.getElementById('loewe-uncertainty');
-		const hsaUncertainty = document.getElementById('hsa-uncertainty');
-		const zipUncertainty = document.getElementById('zip-uncertainty');
-
-		if (blissUncertainty) {
-			// Helper function to safely format uncertainty
-			const formatUncertainty = (value) => {
-				if (value === undefined || value === null) return null;
-				const num = parseFloat(value);
-				return !isNaN(num) ? num.toFixed(3) : null;
-			};
-			
-			const blissUnc = formatUncertainty(result.bliss_uncertainty);
-			const loeweUnc = formatUncertainty(result.loewe_uncertainty);
-			const hsaUnc = formatUncertainty(result.hsa_uncertainty);
-			const zipUnc = formatUncertainty(result.zip_uncertainty);
-			
-			if (blissUnc !== null) {
-				blissUncertainty.textContent = `±${blissUnc}`;
-				loeweUncertainty.textContent = `±${loeweUnc}`;
-				hsaUncertainty.textContent = `±${hsaUnc}`;
-				zipUncertainty.textContent = `±${zipUnc}`;
-			} else {
-				// Hide uncertainty if not available
-				blissUncertainty.textContent = '';
-				loeweUncertainty.textContent = '';
-				hsaUncertainty.textContent = '';
-				zipUncertainty.textContent = '';
-				console.warn('⚠ Uncertainty data not available in database');
-			}
-		}
         
         // Show results section
         const resultsDiv = document.getElementById('results');
@@ -383,6 +358,14 @@ function displayResults(result) {
     } catch (error) {
         console.error('Error displaying results:', error);
         alert('Error displaying results. Check console for details.');
+    }
+}
+
+// Hide results section
+function hideResults() {
+    const resultsDiv = document.getElementById('results');
+    if (resultsDiv) {
+        resultsDiv.style.display = 'none';
     }
 }
 
@@ -493,7 +476,7 @@ function updateRadarChart(result) {
 // ============================================================================
 
 // Process batch query from textarea
-function processBatchQuery() {
+async function processBatchQuery() {
     const input = document.getElementById('batch-input').value.trim();
     
     if (!input) {
@@ -510,7 +493,6 @@ function processBatchQuery() {
         
         if (parts.length === 3) {
             queries.push({
-                rowNum: index + 1,
                 drug_1: parts[0],
                 drug_2: parts[1],
                 cell_line: parts[2]
@@ -525,47 +507,70 @@ function processBatchQuery() {
     
     console.log('✓ Processing', queries.length, 'batch queries');
     
-    // Search database for each query
-    const results = queries.map(query => {
-        const found = synergyDatabase.find(
-            entry => entry.drug_1 === query.drug_1 && 
-                     entry.drug_2 === query.drug_2 && 
-                     entry.cell_line === query.cell_line
-        );
+    // Show loading state
+    const resultsDiv = document.getElementById('batch-results');
+    resultsDiv.style.display = 'block';
+    resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem;"><p>Processing batch query...</p></div>';
+    
+    try {
+        // Send batch request to API
+        const response = await fetch(`${API_BASE_URL}/synergy/batch`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ queries })
+        });
         
-        if (found) {
-            return {
-                ...query,
-                bliss: found.bliss,
-                loewe: found.loewe,
-                hsa: found.hsa,
-                zip: found.zip,
-                bliss_uncertainty: found.bliss_uncertainty || 0,
-                loewe_uncertainty: found.loewe_uncertainty || 0,
-                hsa_uncertainty: found.hsa_uncertainty || 0,
-                zip_uncertainty: found.zip_uncertainty || 0,
-                status: 'found'
-            };
-        } else {
-            return {
-                ...query,
-                bliss: null,
-                loewe: null,
-                hsa: null,
-                zip: null,
-                bliss_uncertainty: null,
-                loewe_uncertainty: null,
-                hsa_uncertainty: null,
-                zip_uncertainty: null,
-                status: 'not_found'
-            };
-        }
-    });
-    
-    const foundCount = results.filter(r => r.status === 'found').length;
-    console.log(`✓ Found ${foundCount}/${queries.length} results`);
-    
-    displayBatchResults(results);
+        const data = await response.json();
+        const results = data.results;
+        
+        const foundCount = results.filter(r => r.status === 'found').length;
+        console.log(`✓ Found ${foundCount}/${queries.length} results`);
+        
+        // Restore results HTML structure
+        resultsDiv.innerHTML = getBatchResultsHTML();
+        
+        // Display results
+        displayBatchResults(results);
+    } catch (error) {
+        console.error('Error processing batch query:', error);
+        resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem;"><p class="error">Error processing batch query</p></div>';
+    }
+}
+
+// Get batch results HTML structure
+function getBatchResultsHTML() {
+    return `
+        <div class="results-header">
+            <h4>Results</h4>
+            <button class="btn-secondary" onclick="exportBatchResults()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Export CSV
+            </button>
+        </div>
+        <div class="table-container">
+            <table id="results-table">
+                <thead>
+                    <tr>
+                        <th>Drug 1</th>
+                        <th>Drug 2</th>
+                        <th>Cell Line</th>
+                        <th>Bliss</th>
+                        <th>Loewe</th>
+                        <th>HSA</th>
+                        <th>ZIP</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    `;
 }
 
 // Display batch results in table
@@ -595,15 +600,6 @@ function displayBatchResults(results) {
         `;
         tbody.appendChild(tr);
     });
-    
-    // Show results section
-    const resultsDiv = document.getElementById('batch-results');
-    resultsDiv.style.display = 'block';
-    
-    // Scroll to results
-    setTimeout(() => {
-        resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }, 100);
     
     // Store results for export
     window.batchResults = results;
@@ -663,6 +659,16 @@ function exportBatchResults() {
 }
 
 // ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+// Show error message
+function showError(message) {
+    alert(`Error: ${message}`);
+    console.error(message);
+}
+
+// ============================================================================
 // MODAL FUNCTIONS
 // ============================================================================
 
@@ -690,4 +696,4 @@ window.addEventListener('click', function(event) {
 // END
 // ============================================================================
 
-console.log('🚀 AlgoraeOS loaded successfully!');
+console.log('🚀 AlgoraeOS (API Version) loaded successfully!');
