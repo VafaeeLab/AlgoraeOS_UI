@@ -4,7 +4,7 @@ Build AlgoraeOS data from the aggregated prediction CSV.
 Outputs
   1. api/database/synergy.db   SQLite table `synergy_scores` (used by server.py, local only)
   2. data/index.json           drug + cell line lookup for the static site
-  3. data/d/<cid>.json         one shard per Drug 1 (PubChem CID) for the static site
+  3. data/b/<n>.json           Drug 1 data grouped into 64 files (n = CID % 64)
 
 The static files let the GitHub Pages site work with no server.
 
@@ -23,6 +23,7 @@ csv.field_size_limit(10**9)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 METRICS = ['Bliss', 'Loewe', 'HSA', 'ZIP']
 DECIMALS = 3
+BUCKETS = 64
 
 
 def load_drugs(path):
@@ -123,7 +124,7 @@ def main(pred_path, drugs_path, cells_path):
 
     # ---- 2/3. Static JSON --------------------------------------------------
     out = os.path.join(ROOT, 'data')
-    shard_dir = os.path.join(out, 'd')
+    shard_dir = os.path.join(out, 'b')
     os.makedirs(shard_dir, exist_ok=True)
     for f in os.listdir(shard_dir):
         os.remove(os.path.join(shard_dir, f))
@@ -137,14 +138,19 @@ def main(pred_path, drugs_path, cells_path):
         # [name, pubchem_cid, has_shard (appears as Drug 1)]
         'drugs': [[n, c, int(h)] for n, c, h in drugs],
         'combinations': len(acc),
+        'buckets': BUCKETS,  # Drug 1 with CID c lives in data/b/<c % buckets>.json
     }
     with open(os.path.join(out, 'index.json'), 'w', encoding='utf-8') as fh:
         json.dump(index, fh, separators=(',', ':'), ensure_ascii=False)
+    # Few files so the site can also be uploaded through the GitHub website (max 100 per upload).
+    buckets = defaultdict(dict)
     for c1, partners in shards.items():
-        with open(os.path.join(shard_dir, f'{c1}.json'), 'w', encoding='utf-8') as fh:
-            json.dump({str(c2): {str(i): v for i, v in cells.items()} for c2, cells in partners.items()},
-                      fh, separators=(',', ':'))
-    print(f'wrote data/index.json and {len(shards):,} shards in data/d/')
+        buckets[c1 % BUCKETS][str(c1)] = {str(c2): {str(i): v for i, v in cells.items()}
+                                          for c2, cells in partners.items()}
+    for b, content in buckets.items():
+        with open(os.path.join(shard_dir, f'{b}.json'), 'w', encoding='utf-8') as fh:
+            json.dump(content, fh, separators=(',', ':'))
+    print(f'wrote data/index.json and {len(buckets)} bucket files in data/b/')
 
 
 if __name__ == '__main__':

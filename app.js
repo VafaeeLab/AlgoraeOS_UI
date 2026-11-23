@@ -3,7 +3,7 @@
 // ----------------------------------------------------------------------------
 // Reads pre-built JSON files (no server needed, works on GitHub Pages):
 //   data/index.json      drugs [name, pubchem_cid, has_shard] + cell line names
-//   data/d/<cid>.json    { drug2_cid: { cell_index: row } } for each Drug 1
+//   data/b/<n>.json      { drug1_cid: { drug2_cid: { cell_index: row } } }, n = cid % 64
 // A row is 12 numbers: prediction[bliss,loewe,hsa,zip], total uncertainty[...],
 // ground truth[...] (null when there is no measured value).
 // Rebuild the files with scripts/build_data.py.
@@ -18,7 +18,8 @@ const state = {
     byName: new Map(),      // lower-case name -> [drug]
     cellLines: [],          // index -> name
     cellByKey: new Map(),   // normalised name -> index
-    shards: new Map(),      // cid -> Promise<shard>
+    buckets: new Map(),     // bucket number -> Promise<{cid: shard}>
+    bucketCount: 64,
     drug1: null,            // selected drug objects
     drug2: null,
 };
@@ -44,6 +45,7 @@ async function initializeApp() {
             state.byName.get(key).push(d);
         });
         state.cellLines = index.cell_lines;
+        state.bucketCount = index.buckets || 64;
         state.cellLines.forEach((name, i) => state.cellByKey.set(cellKey(name), i));
 
         state.drug1Options = state.drugs.filter(d => d.hasShard);
@@ -92,14 +94,20 @@ function resolveCell(text) {
     return i === undefined ? -1 : i;
 }
 
-function getShard(cid) {
-    if (!state.shards.has(cid)) {
-        const p = fetch(`${DATA_URL}/d/${cid}.json`)
+// Drug 1 data is grouped into a few bucket files: data/b/<cid % buckets>.json
+function getBucket(n) {
+    if (!state.buckets.has(n)) {
+        const p = fetch(`${DATA_URL}/b/${n}.json`)
             .then(r => (r.ok ? r.json() : {}))
-            .catch(() => { state.shards.delete(cid); return {}; });
-        state.shards.set(cid, p);
+            .catch(() => { state.buckets.delete(n); return {}; });
+        state.buckets.set(n, p);
     }
-    return state.shards.get(cid);
+    return state.buckets.get(n);
+}
+
+async function getShard(cid) {
+    const bucket = await getBucket(cid % state.bucketCount);
+    return bucket[cid] || {};
 }
 
 // Finds the prediction for drug lists a x b in a cell line. Tries the given
