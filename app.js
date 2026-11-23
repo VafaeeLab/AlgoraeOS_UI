@@ -46,10 +46,13 @@ async function initializeApp() {
         state.cellLines = index.cell_lines;
         state.cellLines.forEach((name, i) => state.cellByKey.set(cellKey(name), i));
 
-        fillDatalist('drug1-list', state.drugs.filter(d => d.hasShard));
+        state.drug1Options = state.drugs.filter(d => d.hasShard);
+        state.drug2Options = [];
+        attachAutocomplete('drug1', () => state.drug1Options);
+        attachAutocomplete('drug2', () => state.drug2Options);
         const drug1 = document.getElementById('drug1');
         drug1.disabled = false;
-        drug1.placeholder = 'Type a drug name or CID...';
+        drug1.placeholder = 'Start typing a drug name or CID...';
         drug1.addEventListener('change', onDrug1Change);
         document.getElementById('drug2').addEventListener('change', onDrug2Change);
 
@@ -134,15 +137,106 @@ function makeResult(d1, d2, cellIdx, row, swapped = false) {
 // SINGLE QUERY: cascading inputs
 // ============================================================================
 
-function fillDatalist(id, drugs) {
-    const list = document.getElementById(id);
-    const frag = document.createDocumentFragment();
-    drugs.forEach(d => {
-        const o = document.createElement('option');
-        o.value = drugLabel(d);
-        frag.appendChild(o);
+// ----------------------------------------------------------------------------
+// Autocomplete: suggestions ranked by how the typed text matches
+//   0  name starts with it, or CID starts with it
+//   1  a word inside the name starts with it (e.g. "acid" -> "Folic acid")
+//   2  name contains it anywhere
+// ----------------------------------------------------------------------------
+const MAX_SUGGESTIONS = 50;
+
+function rankDrugs(options, query) {
+    const q = query.trim().toLowerCase().replace(/^cid\s*:?\s*/, '');
+    if (!q) return options.slice(0, MAX_SUGGESTIONS).map(d => ({ d, rank: 0, at: -1 }));
+    const hits = [];
+    for (const d of options) {
+        const name = d.lower || (d.lower = d.name.toLowerCase());
+        let rank = -1, at = -1;
+        if (name.startsWith(q)) { rank = 0; at = 0; }
+        else if (String(d.cid).startsWith(q)) { rank = 0; }
+        else {
+            at = name.indexOf(q);
+            if (at > 0) rank = /[^a-z0-9]/.test(name[at - 1]) ? 1 : 2;
+        }
+        if (rank >= 0) hits.push({ d, rank, at });
+    }
+    hits.sort((a, b) => a.rank - b.rank || a.d.name.length - b.d.name.length || a.d.name.localeCompare(b.d.name));
+    return hits.slice(0, MAX_SUGGESTIONS);
+}
+
+function attachAutocomplete(inputId, getOptions) {
+    const input = document.getElementById(inputId);
+    const list = document.getElementById(`${inputId}-suggest`);
+    let items = [];
+    let active = -1;
+
+    const close = () => {
+        list.hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+        active = -1;
+    };
+
+    const highlight = i => {
+        active = i;
+        [...list.children].forEach((li, j) => li.classList.toggle('active', j === i));
+        if (list.children[i]) list.children[i].scrollIntoView({ block: 'nearest' });
+    };
+
+    const pick = d => {
+        input.value = drugLabel(d);
+        close();
+        input.dispatchEvent(new Event('change'));
+    };
+
+    const render = () => {
+        const q = input.value;
+        items = rankDrugs(getOptions(), q);
+        const qLen = q.trim().replace(/^cid\s*:?\s*/i, '').length;
+        list.replaceChildren(...items.map(({ d, at }, i) => {
+            const li = document.createElement('li');
+            li.setAttribute('role', 'option');
+            const name = document.createElement('span');
+            if (at >= 0 && qLen) {
+                const mark = document.createElement('mark');
+                mark.textContent = d.name.slice(at, at + qLen);
+                name.append(d.name.slice(0, at), mark, d.name.slice(at + qLen));
+            } else {
+                name.textContent = d.name;
+            }
+            const cid = document.createElement('span');
+            cid.className = 'ac-cid';
+            cid.textContent = `CID ${d.cid}`;
+            li.append(name, cid);
+            li.addEventListener('mousedown', e => { e.preventDefault(); pick(d); });
+            li.addEventListener('mousemove', () => active !== i && highlight(i));
+            return li;
+        }));
+        if (!items.length) {
+            const li = document.createElement('li');
+            li.className = 'ac-empty';
+            li.textContent = 'No matching drugs';
+            list.append(li);
+        }
+        list.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+        highlight(items.length && q.trim() ? 0 : -1);
+    };
+
+    input.addEventListener('input', render);
+    input.addEventListener('focus', () => {
+        if (input.disabled) return;
+        setTimeout(() => input.select(), 0); // typing replaces the previous choice (survives mouseup)
+        render();
     });
-    list.replaceChildren(frag);
+    input.addEventListener('blur', close);
+    input.addEventListener('keydown', e => {
+        if (list.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { render(); return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); highlight(Math.min(active + 1, items.length - 1)); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); highlight(Math.max(active - 1, 0)); }
+        else if (e.key === 'Enter') {
+            if (!list.hidden && items[active]) { e.preventDefault(); pick(items[active].d); }
+        } else if (e.key === 'Escape') close();
+    });
 }
 
 async function onDrug1Change() {
@@ -155,7 +249,7 @@ async function onDrug1Change() {
     drug2.value = '';
     drug2.disabled = true;
     drug2.placeholder = 'Choose Drug 1 first';
-    document.getElementById('drug2-list').replaceChildren();
+    state.drug2Options = [];
     cellSelect.innerHTML = '<option value="">Select cell line...</option>';
     cellSelect.disabled = true;
     hideResults();
@@ -177,7 +271,7 @@ async function onDrug1Change() {
         .map(c => state.byCid.get(Number(c)))
         .filter(Boolean)
         .sort((a, b) => a.name.localeCompare(b.name));
-    fillDatalist('drug2-list', partners);
+    state.drug2Options = partners;
     drug2.disabled = false;
     drug2.placeholder = `Type a name or CID (${partners.length} partners)...`;
 }

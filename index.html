@@ -76,13 +76,19 @@
                 <div class="form-grid">
                     <div class="form-group">
                         <label for="drug1">Drug 1 <span class="label-hint">(name or PubChem CID)</span></label>
-                        <input id="drug1" class="form-control" list="drug1-list" placeholder="Loading drugs..." autocomplete="off" disabled>
-                        <datalist id="drug1-list"></datalist>
+                        <div class="autocomplete">
+                            <input id="drug1" class="form-control" placeholder="Loading drugs..." autocomplete="off"
+                                   role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="drug1-suggest" disabled>
+                            <ul id="drug1-suggest" class="ac-list" role="listbox" hidden></ul>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label for="drug2">Drug 2 <span class="label-hint">(name or PubChem CID)</span></label>
-                        <input id="drug2" class="form-control" list="drug2-list" placeholder="Choose Drug 1 first" autocomplete="off" disabled>
-                        <datalist id="drug2-list"></datalist>
+                        <div class="autocomplete">
+                            <input id="drug2" class="form-control" placeholder="Choose Drug 1 first" autocomplete="off"
+                                   role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="drug2-suggest" disabled>
+                            <ul id="drug2-suggest" class="ac-list" role="listbox" hidden></ul>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Cell Line</label>
