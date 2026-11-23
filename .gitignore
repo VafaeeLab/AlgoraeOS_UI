@@ -1,0 +1,4 @@
+api/database/synergy.db
+api/database/*.local.db
+__pycache__/
+.claude/

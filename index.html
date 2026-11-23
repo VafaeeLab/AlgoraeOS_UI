@@ -75,16 +75,14 @@
                 
                 <div class="form-grid">
                     <div class="form-group">
-                        <label>Drug 1</label>
-                        <select id="drug1" class="form-control">
-                            <option value="">Select first drug...</option>
-                        </select>
+                        <label for="drug1">Drug 1 <span class="label-hint">(name or PubChem CID)</span></label>
+                        <input id="drug1" class="form-control" list="drug1-list" placeholder="Loading drugs..." autocomplete="off" disabled>
+                        <datalist id="drug1-list"></datalist>
                     </div>
                     <div class="form-group">
-                        <label>Drug 2</label>
-                        <select id="drug2" class="form-control" disabled>
-                            <option value="">Select second drug...</option>
-                        </select>
+                        <label for="drug2">Drug 2 <span class="label-hint">(name or PubChem CID)</span></label>
+                        <input id="drug2" class="form-control" list="drug2-list" placeholder="Choose Drug 1 first" autocomplete="off" disabled>
+                        <datalist id="drug2-list"></datalist>
                     </div>
                     <div class="form-group">
                         <label>Cell Line</label>
@@ -172,11 +170,12 @@
 
                 <div class="batch-input-area">
                     <p class="batch-instructions">
-                        Enter queries (one per line) in format: <code>drug_1, drug_2, cell_line</code>
+                        Enter queries (one per line) in format: <code>drug_1, drug_2, cell_line</code>.
+                        Drugs can be given by name or PubChem CID. Tabs or semicolons also work as separators.
                     </p>
-                    <textarea 
-                        id="batch-input" 
-                        placeholder="Example:&#10;Everolimus, Capivasertib, A549&#10;Cisplatin, PD0325901, MDA-MB-231&#10;Doxorubicin, Paclitaxel, MCF7"
+                    <textarea
+                        id="batch-input"
+                        placeholder="Example:&#10;5-Fluorouracil, Gefitinib, A549&#10;3385, 123631, A549"
                         rows="8"
                     ></textarea>
                     <button class="btn-primary" onclick="processBatchQuery()">
@@ -207,6 +206,7 @@
                                 <tr>
                                     <th>Drug 1</th>
                                     <th>Drug 2</th>
+                                    <th>CIDs</th>
                                     <th>Cell Line</th>
                                     <th>Bliss</th>
                                     <th>Loewe</th>

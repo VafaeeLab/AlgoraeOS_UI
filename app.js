@@ -1,545 +1,438 @@
 // ============================================================================
-// ALGORAEOS - AI-Powered Drug Combination Analysis (API Version)
+// ALGORAEOS - AI-Powered Drug Combination Analysis (static version)
+// ----------------------------------------------------------------------------
+// Reads pre-built JSON files (no server needed, works on GitHub Pages):
+//   data/index.json      drugs [name, pubchem_cid, has_shard] + cell line names
+//   data/d/<cid>.json    { drug2_cid: { cell_index: row } } for each Drug 1
+// A row is 12 numbers: prediction[bliss,loewe,hsa,zip], total uncertainty[...],
+// ground truth[...] (null when there is no measured value).
+// Rebuild the files with scripts/build_data.py.
 // ============================================================================
 
-// Configuration
-const API_BASE_URL = 'http://localhost:5000/api';
+const DATA_URL = 'data';
+const METRICS = ['bliss', 'loewe', 'hsa', 'zip'];
 
-// Global State Variables
-let drugs = [];
+const state = {
+    drugs: [],              // [{name, cid, hasShard}]
+    byCid: new Map(),       // cid -> drug
+    byName: new Map(),      // lower-case name -> [drug]
+    cellLines: [],          // index -> name
+    cellByKey: new Map(),   // normalised name -> index
+    shards: new Map(),      // cid -> Promise<shard>
+    drug1: null,            // selected drug objects
+    drug2: null,
+};
 let radarChart = null;
 
 // ============================================================================
-// INITIALIZATION
+// INITIALISATION
 // ============================================================================
 
-// Load data when page loads
-window.addEventListener('DOMContentLoaded', () => {
-    initializeApp();
-});
+window.addEventListener('DOMContentLoaded', initializeApp);
 
-// Initialize application
 async function initializeApp() {
-    console.log('🚀 Initializing AlgoraeOS...');
-    
-    // Check API health
-    const isHealthy = await checkAPIHealth();
-    
-    if (!isHealthy) {
-        showError('Unable to connect to database server. Please ensure the server is running.');
-        return;
-    }
-    
-    // Load drugs for Drug 1 dropdown
-    await loadDrugs();
-    
-    // Set up event listeners
-    setupEventListeners();
-    
-    console.log('✓ AlgoraeOS initialized successfully');
-}
-
-// Check if API is accessible
-async function checkAPIHealth() {
     try {
-        const response = await fetch(`${API_BASE_URL}/health`);
-        const data = await response.json();
-        console.log('✓ API Health:', data);
-        return data.status === 'healthy';
-    } catch (error) {
-        console.error('✗ API Health Check Failed:', error);
-        return false;
-    }
-}
+        const res = await fetch(`${DATA_URL}/index.json`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const index = await res.json();
 
-// Load all drugs from API
-async function loadDrugs() {
-    try {
-        const response = await fetch(`${API_BASE_URL}/drugs/all`);
-        drugs = await response.json();
-        console.log('✓ Loaded', drugs.length, 'drugs');
-        populateDrug1Dropdown();
+        state.drugs = index.drugs.map(([name, cid, hasShard]) => ({ name, cid, hasShard: !!hasShard }));
+        state.drugs.forEach(d => {
+            state.byCid.set(d.cid, d);
+            const key = d.name.toLowerCase();
+            if (!state.byName.has(key)) state.byName.set(key, []);
+            state.byName.get(key).push(d);
+        });
+        state.cellLines = index.cell_lines;
+        state.cellLines.forEach((name, i) => state.cellByKey.set(cellKey(name), i));
+
+        fillDatalist('drug1-list', state.drugs.filter(d => d.hasShard));
+        const drug1 = document.getElementById('drug1');
+        drug1.disabled = false;
+        drug1.placeholder = 'Type a drug name or CID...';
+        drug1.addEventListener('change', onDrug1Change);
+        document.getElementById('drug2').addEventListener('change', onDrug2Change);
+
+        console.log(`✓ AlgoraeOS ready: ${state.drugs.length} drugs, ${state.cellLines.length} cell lines, ${index.combinations} combinations`);
     } catch (error) {
-        console.error('Error loading drugs:', error);
-        showError('Failed to load drugs from database');
+        console.error(error);
+        showError('Could not load the synergy data files. Please refresh the page.');
     }
 }
 
 // ============================================================================
-// DROPDOWN MANAGEMENT (Cascading with API)
+// LOOKUP HELPERS (drugs by name or PubChem CID)
 // ============================================================================
 
-// Populate Drug 1 dropdown
-function populateDrug1Dropdown() {
-    const drug1Select = document.getElementById('drug1');
-    
-    if (!drug1Select) {
-        console.error('Drug 1 select element not found!');
-        return;
+function drugLabel(d) {
+    return `${d.name} (CID ${d.cid})`;
+}
+
+function cellKey(name) {
+    return String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// Returns every drug matching the text: "Name (CID 123)", "123", "CID 123" or "Name".
+function resolveDrugs(text) {
+    const t = String(text || '').trim();
+    if (!t) return [];
+    let m = t.match(/\(\s*CID\s*(\d+)\s*\)\s*$/i) || t.match(/^(?:CID\s*:?\s*)?(\d+)(?:\.0+)?$/i);
+    if (m) {
+        const d = state.byCid.get(Number(m[1]));
+        if (d) return [d];
     }
-    
-    // Clear and populate Drug 1
-    drug1Select.innerHTML = '<option value="">Select first drug...</option>';
-    
-    drugs.forEach(drug => {
-        const option = document.createElement('option');
-        option.value = drug;
-        option.textContent = drug;
-        drug1Select.appendChild(option);
+    return state.byName.get(t.toLowerCase()) || [];
+}
+
+function resolveCell(text) {
+    const i = state.cellByKey.get(cellKey(text));
+    return i === undefined ? -1 : i;
+}
+
+function getShard(cid) {
+    if (!state.shards.has(cid)) {
+        const p = fetch(`${DATA_URL}/d/${cid}.json`)
+            .then(r => (r.ok ? r.json() : {}))
+            .catch(() => { state.shards.delete(cid); return {}; });
+        state.shards.set(cid, p);
+    }
+    return state.shards.get(cid);
+}
+
+// Finds the prediction for drug lists a x b in a cell line. Tries the given
+// order first, then the swapped order. Returns null if nothing matches.
+async function findCombination(drugsA, drugsB, cellIdx) {
+    for (const [first, second, swapped] of [[drugsA, drugsB, false], [drugsB, drugsA, true]]) {
+        for (const d1 of first) {
+            if (!d1.hasShard) continue;
+            const shard = await getShard(d1.cid);
+            for (const d2 of second) {
+                const row = shard[d2.cid] && shard[d2.cid][cellIdx];
+                if (row) return makeResult(d1, d2, cellIdx, row, swapped);
+            }
+        }
+    }
+    return null;
+}
+
+function makeResult(d1, d2, cellIdx, row, swapped = false) {
+    const r = {
+        drug_1: d1.name, drug_1_cid: d1.cid,
+        drug_2: d2.name, drug_2_cid: d2.cid,
+        cell_line: state.cellLines[cellIdx],
+        swapped,
+    };
+    METRICS.forEach((m, i) => {
+        r[m] = row[i];
+        r[`${m}_uncertainty`] = row[i + 4];
+        r[`${m}_gt`] = row[i + 8];
     });
-    
-    console.log('✓ Drug 1 dropdown populated');
+    return r;
 }
 
-// Set up event listeners
-function setupEventListeners() {
-    const drug1Select = document.getElementById('drug1');
-    const drug2Select = document.getElementById('drug2');
-    
-    if (drug1Select) {
-        drug1Select.addEventListener('change', onDrug1Change);
-    }
-    
-    if (drug2Select) {
-        drug2Select.addEventListener('change', onDrug2Change);
-    }
+// ============================================================================
+// SINGLE QUERY: cascading inputs
+// ============================================================================
+
+function fillDatalist(id, drugs) {
+    const list = document.getElementById(id);
+    const frag = document.createDocumentFragment();
+    drugs.forEach(d => {
+        const o = document.createElement('option');
+        o.value = drugLabel(d);
+        frag.appendChild(o);
+    });
+    list.replaceChildren(frag);
 }
 
-// Handle Drug 1 selection change
 async function onDrug1Change() {
-    const drug1 = document.getElementById('drug1').value;
-    const drug2Select = document.getElementById('drug2');
-    const cellLineSelect = document.getElementById('cellLine');
-    
-    // Reset Drug 2 and Cell Line
-    drug2Select.innerHTML = '<option value="">Select second drug...</option>';
-    cellLineSelect.innerHTML = '<option value="">Select cell line...</option>';
-    drug2Select.disabled = !drug1;
-    cellLineSelect.disabled = true;
-    
-    // Hide results
+    const input = document.getElementById('drug1');
+    const drug2 = document.getElementById('drug2');
+    const cellSelect = document.getElementById('cellLine');
+
+    state.drug1 = null;
+    state.drug2 = null;
+    drug2.value = '';
+    drug2.disabled = true;
+    drug2.placeholder = 'Choose Drug 1 first';
+    document.getElementById('drug2-list').replaceChildren();
+    cellSelect.innerHTML = '<option value="">Select cell line...</option>';
+    cellSelect.disabled = true;
     hideResults();
-    
-    if (!drug1) return;
-    
-    // Show loading state
-    drug2Select.innerHTML = '<option value="">Loading...</option>';
-    
-    try {
-        // Fetch drug partners from API
-        const response = await fetch(`${API_BASE_URL}/drugs/partners?drug1=${encodeURIComponent(drug1)}`);
-        const partners = await response.json();
-        
-        // Populate Drug 2 dropdown
-        drug2Select.innerHTML = '<option value="">Select second drug...</option>';
-        partners.forEach(drug => {
-            const option = document.createElement('option');
-            option.value = drug;
-            option.textContent = drug;
-            drug2Select.appendChild(option);
-        });
-        
-        console.log('✓ Drug 2 options updated:', partners.length, 'available');
-    } catch (error) {
-        console.error('Error loading drug partners:', error);
-        drug2Select.innerHTML = '<option value="">Error loading options</option>';
+
+    const matches = resolveDrugs(input.value).filter(d => d.hasShard);
+    if (!input.value.trim()) return;
+    if (matches.length === 0) {
+        drug2.placeholder = 'Drug 1 not found';
+        return;
     }
+    const d1 = matches[0];
+    state.drug1 = d1;
+    input.value = drugLabel(d1);
+
+    drug2.placeholder = 'Loading...';
+    const shard = await getShard(d1.cid);
+    if (state.drug1 !== d1) return; // selection changed while loading
+    const partners = Object.keys(shard)
+        .map(c => state.byCid.get(Number(c)))
+        .filter(Boolean)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    fillDatalist('drug2-list', partners);
+    drug2.disabled = false;
+    drug2.placeholder = `Type a name or CID (${partners.length} partners)...`;
 }
 
-// Handle Drug 2 selection change
 async function onDrug2Change() {
-    const drug1 = document.getElementById('drug1').value;
-    const drug2 = document.getElementById('drug2').value;
-    const cellLineSelect = document.getElementById('cellLine');
-    
-    // Reset Cell Line
-    cellLineSelect.innerHTML = '<option value="">Select cell line...</option>';
-    cellLineSelect.disabled = !drug2;
-    
-    // Hide results
+    const input = document.getElementById('drug2');
+    const cellSelect = document.getElementById('cellLine');
+    state.drug2 = null;
+    cellSelect.innerHTML = '<option value="">Select cell line...</option>';
+    cellSelect.disabled = true;
     hideResults();
-    
-    if (!drug1 || !drug2) return;
-    
-    // Show loading state
-    cellLineSelect.innerHTML = '<option value="">Loading...</option>';
-    
-    try {
-        // Fetch cell lines from API
-        const response = await fetch(
-            `${API_BASE_URL}/celllines?drug1=${encodeURIComponent(drug1)}&drug2=${encodeURIComponent(drug2)}`
-        );
-        const celllines = await response.json();
-        
-        // Populate Cell Line dropdown
-        cellLineSelect.innerHTML = '<option value="">Select cell line...</option>';
-        celllines.forEach(cell => {
-            const option = document.createElement('option');
-            option.value = cell;
-            option.textContent = cell;
-            cellLineSelect.appendChild(option);
-        });
-        
-        console.log('✓ Cell Line options updated:', celllines.length, 'available');
-    } catch (error) {
-        console.error('Error loading cell lines:', error);
-        cellLineSelect.innerHTML = '<option value="">Error loading options</option>';
+    if (!state.drug1 || !input.value.trim()) return;
+
+    const shard = await getShard(state.drug1.cid);
+    const d2 = resolveDrugs(input.value).find(d => shard[d.cid]);
+    if (!d2) {
+        cellSelect.innerHTML = '<option value="">No data for this pair</option>';
+        return;
     }
+    state.drug2 = d2;
+    input.value = drugLabel(d2);
+
+    const cells = Object.keys(shard[d2.cid]).map(Number)
+        .sort((a, b) => state.cellLines[a].localeCompare(state.cellLines[b]));
+    cells.forEach(i => {
+        const o = document.createElement('option');
+        o.value = i;
+        o.textContent = state.cellLines[i];
+        cellSelect.appendChild(o);
+    });
+    cellSelect.disabled = false;
 }
 
 // ============================================================================
 // MODE SWITCHING
 // ============================================================================
 
-// Switch between Single Query and Batch Mode
 function switchMode(mode) {
-    const singleMode = document.getElementById('single-mode');
-    const batchMode = document.getElementById('batch-mode');
-    const buttons = document.querySelectorAll('.mode-btn');
-    
-    buttons.forEach(btn => btn.classList.remove('active'));
-    event.target.classList.add('active');
-    
-    if (mode === 'single') {
-        singleMode.style.display = 'block';
-        batchMode.style.display = 'none';
-    } else {
-        singleMode.style.display = 'none';
-        batchMode.style.display = 'block';
-    }
+    document.getElementById('single-mode').style.display = mode === 'single' ? 'block' : 'none';
+    document.getElementById('batch-mode').style.display = mode === 'single' ? 'none' : 'block';
+    document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('onclick').includes(`'${mode}'`));
+    });
 }
 
 // ============================================================================
-// SINGLE QUERY MODE
+// SINGLE QUERY: results
 // ============================================================================
 
-// Predict synergy for single query
 async function predictSynergy() {
-    console.log('🔍 Predict button clicked');
-    
-    const drug1 = document.getElementById('drug1').value;
-    const drug2 = document.getElementById('drug2').value;
-    const cellLine = document.getElementById('cellLine').value;
-    
-    console.log('Selected:', drug1, drug2, cellLine);
-    
-    // Validate inputs
-    if (!drug1 || !drug2 || !cellLine) {
-        alert('Please select all three fields (Drug 1, Drug 2, and Cell Line)');
+    const cellValue = document.getElementById('cellLine').value;
+    if (!state.drug1 || !state.drug2 || cellValue === '') {
+        alert('Please choose Drug 1, Drug 2 and a Cell Line.');
         return;
     }
-    
-    // Show loading state
-    const resultsDiv = document.getElementById('results');
-    resultsDiv.style.display = 'block';
-    resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem;"><p>Loading...</p></div>';
-    
-    try {
-        // Query API
-        const response = await fetch(
-            `${API_BASE_URL}/synergy?drug1=${encodeURIComponent(drug1)}&drug2=${encodeURIComponent(drug2)}&cellline=${encodeURIComponent(cellLine)}`
-        );
-        
-        if (!response.ok) {
-            throw new Error('Combination not found');
-        }
-        
-        const result = await response.json();
-        console.log('✓ Result found:', result);
-        
-        // Restore results HTML structure
-        resultsDiv.innerHTML = getResultsHTML();
-        
-        // Display results
-        displayResults(result);
-    } catch (error) {
-        console.log('✗ Error:', error);
-        resultsDiv.style.display = 'none';
-        alert(`No data found for the combination:\n${drug1} + ${drug2} in ${cellLine}\n\nTry a different combination or contact the administrator to add this data.`);
+    const shard = await getShard(state.drug1.cid);
+    const row = shard[state.drug2.cid] && shard[state.drug2.cid][cellValue];
+    if (!row) {
+        alert('No data found for this combination.');
+        return;
     }
+    const result = makeResult(state.drug1, state.drug2, Number(cellValue), row);
+    const resultsDiv = document.getElementById('results');
+    resultsDiv.innerHTML = getResultsHTML(result);
+    displayResults(result);
 }
 
-// Get results HTML structure
-function getResultsHTML() {
+function getResultsHTML(r) {
+    const card = (m, label, desc) => `
+        <div class="metric-card metric-${m}">
+            <div class="metric-header">
+                <span class="metric-name">${label}</span>
+                <div class="metric-value-group">
+                    <span class="metric-value" id="${m}-value">-</span>
+                    <span class="metric-uncertainty" id="${m}-uncertainty"></span>
+                </div>
+            </div>
+            <p class="metric-desc">${desc}<span class="metric-gt" id="${m}-gt"></span></p>
+        </div>`;
     return `
         <div class="results-header">
-            <h4>Synergy Scores</h4>
+            <h4>Predicted Synergy Scores</h4>
+            <p class="results-subtitle">${escapeHTML(drugLabel(state.byCid.get(r.drug_1_cid)))} +
+               ${escapeHTML(drugLabel(state.byCid.get(r.drug_2_cid)))} in ${escapeHTML(r.cell_line)}</p>
         </div>
         <div class="results-grid">
             <div class="metrics-panel">
-                <div class="metric-card metric-bliss">
-                    <div class="metric-header">
-                        <span class="metric-name">Bliss</span>
-                        <div class="metric-value-group">
-                            <span class="metric-value" id="bliss-value">-</span>
-                            <span class="metric-uncertainty" id="bliss-uncertainty"></span>
-                        </div>
-                    </div>
-                    <p class="metric-desc">Independence model</p>
-                </div>
-                <div class="metric-card metric-loewe">
-                    <div class="metric-header">
-                        <span class="metric-name">Loewe</span>
-                        <div class="metric-value-group">
-                            <span class="metric-value" id="loewe-value">-</span>
-                            <span class="metric-uncertainty" id="loewe-uncertainty"></span>
-                        </div>
-                    </div>
-                    <p class="metric-desc">Additivity reference</p>
-                </div>
-                <div class="metric-card metric-hsa">
-                    <div class="metric-header">
-                        <span class="metric-name">HSA</span>
-                        <div class="metric-value-group">
-                            <span class="metric-value" id="hsa-value">-</span>
-                            <span class="metric-uncertainty" id="hsa-uncertainty"></span>
-                        </div>
-                    </div>
-                    <p class="metric-desc">Highest single agent</p>
-                </div>
-                <div class="metric-card metric-zip">
-                    <div class="metric-header">
-                        <span class="metric-name">ZIP</span>
-                        <div class="metric-value-group">
-                            <span class="metric-value" id="zip-value">-</span>
-                            <span class="metric-uncertainty" id="zip-uncertainty"></span>
-                        </div>
-                    </div>
-                    <p class="metric-desc">Zero interaction potency</p>
-                </div>
+                ${card('bliss', 'Bliss', 'Independence model')}
+                ${card('loewe', 'Loewe', 'Additivity reference')}
+                ${card('hsa', 'HSA', 'Highest single agent')}
+                ${card('zip', 'ZIP', 'Zero interaction potency')}
             </div>
             <div class="chart-panel">
                 <canvas id="radarChart"></canvas>
             </div>
         </div>
         <div class="info-banner">
-            <strong>Note:</strong> Scores depend on assay normalization; interpret within context.
-        </div>
-    `;
+            <strong>Note:</strong> Values are model predictions ± total (epistemic + aleatoric) uncertainty.
+            Scores depend on assay normalization; interpret within context.
+        </div>`;
 }
 
-// Display results with uncertainties
+function fmt(v) {
+    return v === null || v === undefined ? '-' : v.toFixed(3);
+}
+
 function displayResults(result) {
-    console.log('Displaying results:', result);
-    
-    try {
-        // Display main values
-        document.getElementById('bliss-value').textContent = result.bliss.toFixed(3);
-        document.getElementById('loewe-value').textContent = result.loewe.toFixed(3);
-        document.getElementById('hsa-value').textContent = result.hsa.toFixed(3);
-        document.getElementById('zip-value').textContent = result.zip.toFixed(3);
-        
-        // Display uncertainties
-        const blissUncertainty = document.getElementById('bliss-uncertainty');
-        const loeweUncertainty = document.getElementById('loewe-uncertainty');
-        const hsaUncertainty = document.getElementById('hsa-uncertainty');
-        const zipUncertainty = document.getElementById('zip-uncertainty');
-        
-        if (result.bliss_uncertainty !== null && result.bliss_uncertainty !== undefined) {
-            blissUncertainty.textContent = `±${result.bliss_uncertainty.toFixed(3)}`;
-            loeweUncertainty.textContent = `±${result.loewe_uncertainty.toFixed(3)}`;
-            hsaUncertainty.textContent = `±${result.hsa_uncertainty.toFixed(3)}`;
-            zipUncertainty.textContent = `±${result.zip_uncertainty.toFixed(3)}`;
-        }
-        
-        // Show results section
-        const resultsDiv = document.getElementById('results');
-        resultsDiv.style.display = 'block';
-        
-        // Scroll to results smoothly
-        setTimeout(() => {
-            resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }, 100);
-        
-        // Update radar chart
-        updateRadarChart(result);
-        
-        console.log('✓ Results displayed successfully');
-    } catch (error) {
-        console.error('Error displaying results:', error);
-        alert('Error displaying results. Check console for details.');
-    }
+    METRICS.forEach(m => {
+        document.getElementById(`${m}-value`).textContent = fmt(result[m]);
+        const u = result[`${m}_uncertainty`];
+        document.getElementById(`${m}-uncertainty`).textContent = u === null ? '' : `±${u.toFixed(3)}`;
+        const gt = result[`${m}_gt`];
+        document.getElementById(`${m}-gt`).textContent = gt === null ? '' : ` · measured ${gt.toFixed(3)}`;
+    });
+    const resultsDiv = document.getElementById('results');
+    resultsDiv.style.display = 'block';
+    setTimeout(() => resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+    updateRadarChart(result);
 }
 
-// Hide results section
 function hideResults() {
     const resultsDiv = document.getElementById('results');
-    if (resultsDiv) {
-        resultsDiv.style.display = 'none';
-    }
+    if (resultsDiv) resultsDiv.style.display = 'none';
 }
 
 // ============================================================================
 // RADAR CHART
 // ============================================================================
 
-// Update radar chart with new data
 function updateRadarChart(result) {
     const canvas = document.getElementById('radarChart');
-    if (!canvas) {
-        console.error('Radar chart canvas not found!');
-        return;
-    }
-    
-    const ctx = canvas.getContext('2d');
-    
-    // Destroy existing chart if it exists
-    if (radarChart) {
-        radarChart.destroy();
-    }
-    
-    try {
-        // Create new chart
-        radarChart = new Chart(ctx, {
-            type: 'radar',
-            data: {
-                labels: ['Bliss', 'Loewe', 'HSA', 'ZIP'],
-                datasets: [{
-                    label: 'Synergy Scores',
-                    data: [result.bliss, result.loewe, result.hsa, result.zip],
-                    backgroundColor: 'rgba(79, 123, 247, 0.2)',
-                    borderColor: '#4F7BF7',
-                    borderWidth: 3,
-                    pointBackgroundColor: '#4F7BF7',
-                    pointBorderColor: '#fff',
-                    pointBorderWidth: 2,
-                    pointRadius: 5,
-                    pointHoverBackgroundColor: '#fff',
-                    pointHoverBorderColor: '#4F7BF7',
-                    pointHoverRadius: 7
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                scales: {
-                    r: {
-                        beginAtZero: true,
-                        max: 1,
-                        min: 0,
-                        ticks: {
-                            stepSize: 0.2,
-                            font: {
-                                size: 11
-                            }
-                        },
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.1)'
-                        },
-                        angleLines: {
-                            color: 'rgba(0, 0, 0, 0.1)'
-                        },
-                        pointLabels: {
-                            font: {
-                                size: 13,
-                                weight: 'bold'
-                            }
-                        }
-                    }
+    if (!canvas || typeof Chart === 'undefined') return;
+    if (radarChart) radarChart.destroy();
+
+    const values = METRICS.map(m => result[m]);
+    // Synergy scores can be negative, so use a symmetric scale around zero.
+    const extent = Math.max(5, ...values.map(v => Math.abs(v || 0)));
+    const step = extent > 50 ? 20 : extent > 20 ? 10 : 5;
+    const limit = Math.ceil(extent / step) * step;
+
+    radarChart = new Chart(canvas.getContext('2d'), {
+        type: 'radar',
+        data: {
+            labels: ['Bliss', 'Loewe', 'HSA', 'ZIP'],
+            datasets: [{
+                label: 'Predicted synergy',
+                data: values,
+                backgroundColor: 'rgba(79, 123, 247, 0.2)',
+                borderColor: '#4F7BF7',
+                borderWidth: 3,
+                pointBackgroundColor: '#4F7BF7',
+                pointBorderColor: '#fff',
+                pointBorderWidth: 2,
+                pointRadius: 5,
+            }],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: {
+                r: {
+                    min: -limit,
+                    max: limit,
+                    ticks: { stepSize: step, font: { size: 11 } },
+                    grid: { color: 'rgba(0, 0, 0, 0.1)' },
+                    angleLines: { color: 'rgba(0, 0, 0, 0.1)' },
+                    pointLabels: { font: { size: 13, weight: 'bold' } },
                 },
-                plugins: {
-                    legend: {
-                        display: false
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: ctx => {
+                            const m = METRICS[ctx.dataIndex];
+                            const u = result[`${m}_uncertainty`];
+                            return `${ctx.label}: ${fmt(ctx.parsed.r)}${u === null ? '' : ` ±${u.toFixed(3)}`}`;
+                        },
                     },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                const label = context.label || '';
-                                const value = context.parsed.r.toFixed(3);
-                                
-                                // Add uncertainty if available
-                                if (result.bliss_uncertainty !== undefined) {
-                                    let uncertainty = '';
-                                    if (label === 'Bliss') uncertainty = result.bliss_uncertainty.toFixed(3);
-                                    else if (label === 'Loewe') uncertainty = result.loewe_uncertainty.toFixed(3);
-                                    else if (label === 'HSA') uncertainty = result.hsa_uncertainty.toFixed(3);
-                                    else if (label === 'ZIP') uncertainty = result.zip_uncertainty.toFixed(3);
-                                    return `${label}: ${value} ±${uncertainty}`;
-                                } else {
-                                    return `${label}: ${value}`;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        
-        console.log('✓ Radar chart updated');
-    } catch (error) {
-        console.error('Error creating chart:', error);
-    }
+                },
+            },
+        },
+    });
 }
 
 // ============================================================================
-// BATCH QUERY MODE
+// BATCH QUERY
 // ============================================================================
 
-// Process batch query from textarea
+// Splits a line into [drug1, drug2, cell]. Tabs/semicolons are used as-is.
+// With commas, drug names may themselves contain commas, so the cell line is
+// the last field and the split between the two drugs is chosen so both resolve.
+function parseBatchLine(line) {
+    const delim = line.includes('\t') ? '\t' : line.includes(';') ? ';' : ',';
+    const parts = line.split(delim).map(p => p.trim());
+    if (parts.length < 3) return null;
+    if (parts.length === 3 || delim !== ',') {
+        return parts.length === 3 ? parts : null;
+    }
+    const cell = parts[parts.length - 1];
+    const drugParts = parts.slice(0, -1);
+    for (let k = 1; k < drugParts.length; k++) {
+        const a = drugParts.slice(0, k).join(', ');
+        const b = drugParts.slice(k).join(', ');
+        if (resolveDrugs(a).length && resolveDrugs(b).length) return [a, b, cell];
+    }
+    return [drugParts[0], drugParts.slice(1).join(', '), cell];
+}
+
 async function processBatchQuery() {
     const input = document.getElementById('batch-input').value.trim();
-    
     if (!input) {
         alert('Please enter queries in the text area');
         return;
     }
-    
-    const lines = input.split('\n').filter(line => line.trim());
-    const queries = [];
-    
-    // Parse each line
-    lines.forEach((line, index) => {
-        const parts = line.split(',').map(p => p.trim());
-        
-        if (parts.length === 3) {
-            queries.push({
-                drug_1: parts[0],
-                drug_2: parts[1],
-                cell_line: parts[2]
-            });
-        }
-    });
-    
-    if (queries.length === 0) {
-        alert('No valid queries found. Please use format:\ndrug_1, drug_2, cell_line');
+    if (!state.drugs.length) {
+        alert('Data is still loading, please try again in a moment.');
         return;
     }
-    
-    console.log('✓ Processing', queries.length, 'batch queries');
-    
-    // Show loading state
+
+    const lines = input.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+        .filter(l => !/^drug_?1\b/i.test(l)); // skip a header row
     const resultsDiv = document.getElementById('batch-results');
     resultsDiv.style.display = 'block';
     resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem;"><p>Processing batch query...</p></div>';
-    
-    try {
-        // Send batch request to API
-        const response = await fetch(`${API_BASE_URL}/synergy/batch`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ queries })
-        });
-        
-        const data = await response.json();
-        const results = data.results;
-        
-        const foundCount = results.filter(r => r.status === 'found').length;
-        console.log(`✓ Found ${foundCount}/${queries.length} results`);
-        
-        // Restore results HTML structure
-        resultsDiv.innerHTML = getBatchResultsHTML();
-        
-        // Display results
-        displayBatchResults(results);
-    } catch (error) {
-        console.error('Error processing batch query:', error);
-        resultsDiv.innerHTML = '<div style="text-align: center; padding: 2rem;"><p class="error">Error processing batch query</p></div>';
+
+    const results = [];
+    for (const line of lines) {
+        const parsed = parseBatchLine(line);
+        if (!parsed) {
+            results.push({ drug_1: line, drug_2: '', cell_line: '', status: 'invalid', note: 'Use: drug_1, drug_2, cell_line' });
+            continue;
+        }
+        const [q1, q2, qc] = parsed;
+        const a = resolveDrugs(q1), b = resolveDrugs(q2), cellIdx = resolveCell(qc);
+        const missing = [!a.length && `drug "${q1}"`, !b.length && `drug "${q2}"`, cellIdx < 0 && `cell line "${qc}"`].filter(Boolean);
+        if (missing.length) {
+            results.push({ drug_1: q1, drug_2: q2, cell_line: qc, status: 'not_found', note: `Unknown ${missing.join(', ')}` });
+            continue;
+        }
+        const r = await findCombination(a, b, cellIdx);
+        if (r) {
+            r.status = 'found';
+            r.note = r.swapped ? 'Only the reversed order (Drug 2 + Drug 1) is in the data' : '';
+            results.push(r);
+        } else {
+            results.push({ drug_1: a[0].name, drug_1_cid: a[0].cid, drug_2: b[0].name, drug_2_cid: b[0].cid,
+                cell_line: state.cellLines[cellIdx], status: 'not_found', note: 'Combination not in the data' });
+        }
     }
+
+    resultsDiv.innerHTML = getBatchResultsHTML();
+    displayBatchResults(results);
 }
 
-// Get batch results HTML structure
 function getBatchResultsHTML() {
     return `
         <div class="results-header">
@@ -557,143 +450,97 @@ function getBatchResultsHTML() {
             <table id="results-table">
                 <thead>
                     <tr>
-                        <th>Drug 1</th>
-                        <th>Drug 2</th>
-                        <th>Cell Line</th>
-                        <th>Bliss</th>
-                        <th>Loewe</th>
-                        <th>HSA</th>
-                        <th>ZIP</th>
-                        <th>Status</th>
+                        <th>Drug 1</th><th>Drug 2</th><th>CIDs</th><th>Cell Line</th>
+                        <th>Bliss</th><th>Loewe</th><th>HSA</th><th>ZIP</th><th>Status</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
             </table>
-        </div>
-    `;
+        </div>`;
 }
 
-// Display batch results in table
 function displayBatchResults(results) {
     const tbody = document.querySelector('#results-table tbody');
     tbody.innerHTML = '';
-    
     results.forEach(row => {
+        const cell = m => {
+            if (row[m] === null || row[m] === undefined) return '-';
+            const u = row[`${m}_uncertainty`];
+            return u === null || u === undefined
+                ? fmt(row[m])
+                : `<span class="metric-with-uncertainty" title="Uncertainty: ±${u.toFixed(3)}">${fmt(row[m])}</span>`;
+        };
+        const cids = row.drug_1_cid ? `${row.drug_1_cid} + ${row.drug_2_cid}` : '-';
+        const found = row.status === 'found';
         const tr = document.createElement('tr');
-        
-        // Check if uncertainties are available
-        const hasUncertainty = row.bliss_uncertainty !== null && row.bliss_uncertainty !== undefined;
-        
         tr.innerHTML = `
-            <td>${row.drug_1}</td>
-            <td>${row.drug_2}</td>
-            <td>${row.cell_line}</td>
-            <td>${row.bliss !== null ? (hasUncertainty ? `<span class="metric-with-uncertainty" title="Uncertainty: ±${row.bliss_uncertainty.toFixed(3)}">${row.bliss.toFixed(3)}</span>` : row.bliss.toFixed(3)) : '-'}</td>
-            <td>${row.loewe !== null ? (hasUncertainty ? `<span class="metric-with-uncertainty" title="Uncertainty: ±${row.loewe_uncertainty.toFixed(3)}">${row.loewe.toFixed(3)}</span>` : row.loewe.toFixed(3)) : '-'}</td>
-            <td>${row.hsa !== null ? (hasUncertainty ? `<span class="metric-with-uncertainty" title="Uncertainty: ±${row.hsa_uncertainty.toFixed(3)}">${row.hsa.toFixed(3)}</span>` : row.hsa.toFixed(3)) : '-'}</td>
-            <td>${row.zip !== null ? (hasUncertainty ? `<span class="metric-with-uncertainty" title="Uncertainty: ±${row.zip_uncertainty.toFixed(3)}">${row.zip.toFixed(3)}</span>` : row.zip.toFixed(3)) : '-'}</td>
+            <td>${escapeHTML(row.drug_1)}</td>
+            <td>${escapeHTML(row.drug_2)}</td>
+            <td>${cids}</td>
+            <td>${escapeHTML(row.cell_line)}</td>
+            <td>${cell('bliss')}</td><td>${cell('loewe')}</td><td>${cell('hsa')}</td><td>${cell('zip')}</td>
             <td>
-                <span class="status-badge ${row.status === 'found' ? 'status-found' : 'status-not-found'}">
-                    ${row.status === 'found' ? '✓ Found' : '✗ Not found'}
+                <span class="status-badge ${found ? 'status-found' : 'status-not-found'}" title="${escapeHTML(row.note || '')}">
+                    ${found ? (row.swapped ? '✓ Found (reversed)' : '✓ Found') : row.status === 'invalid' ? '✗ Invalid line' : '✗ Not found'}
                 </span>
-            </td>
-        `;
+            </td>`;
         tbody.appendChild(tr);
     });
-    
-    // Store results for export
     window.batchResults = results;
-    
-    console.log('✓ Batch results displayed');
 }
 
 // ============================================================================
-// EXPORT FUNCTIONALITY
+// EXPORT
 // ============================================================================
 
-// Export batch results to CSV
+function csvField(v) {
+    if (v === null || v === undefined) return '';
+    const s = typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(3)) : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
 function exportBatchResults() {
     if (!window.batchResults || window.batchResults.length === 0) {
         alert('No results to export');
         return;
     }
-    
-    // Create CSV content
-    const headers = [
-        'drug_1', 'drug_2', 'cell_line', 
-        'bliss', 'loewe', 'hsa', 'zip', 'status'
-    ];
-    
-    const rows = window.batchResults.map(r => [
-        r.drug_1,
-        r.drug_2,
-        r.cell_line,
-        r.bliss !== null ? r.bliss.toFixed(3) : '',
-        r.loewe !== null ? r.loewe.toFixed(3) : '',
-        r.hsa !== null ? r.hsa.toFixed(3) : '',
-        r.zip !== null ? r.zip.toFixed(3) : '',
-        r.status
-    ]);
-    
-    const csvContent = [
-        headers.join(','),
-        ...rows.map(r => r.join(','))
-    ].join('\n');
-    
-    // Create and download file
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
+    const headers = ['drug_1', 'drug_1_cid', 'drug_2', 'drug_2_cid', 'cell_line',
+        ...METRICS, ...METRICS.map(m => `${m}_uncertainty`), ...METRICS.map(m => `${m}_ground_truth`),
+        'status', 'note'];
+    const keys = headers.map(h => h.replace('_ground_truth', '_gt'));
+    const csv = [headers.join(','), ...window.batchResults.map(r => keys.map(k => csvField(r[k])).join(','))].join('\n');
+
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
     const link = document.createElement('a');
-    const timestamp = new Date().toISOString().slice(0, 10);
-    
     link.href = url;
-    link.download = `synergy_results_${timestamp}.csv`;
-    
+    link.download = `synergy_results_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    
     URL.revokeObjectURL(url);
-    
-    console.log('✓ Results exported to CSV');
 }
 
 // ============================================================================
-// UTILITY FUNCTIONS
+// UTILITIES & MODAL
 // ============================================================================
 
-// Show error message
+function escapeHTML(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function showError(message) {
     alert(`Error: ${message}`);
     console.error(message);
 }
 
-// ============================================================================
-// MODAL FUNCTIONS
-// ============================================================================
-
-// Show About modal
 function showAbout() {
-    const modal = document.getElementById('about-modal');
-    modal.classList.add('active');
+    document.getElementById('about-modal').classList.add('active');
 }
 
-// Hide About modal
 function hideAbout() {
-    const modal = document.getElementById('about-modal');
-    modal.classList.remove('active');
+    document.getElementById('about-modal').classList.remove('active');
 }
 
-// Close modal when clicking outside
-window.addEventListener('click', function(event) {
-    const modal = document.getElementById('about-modal');
-    if (event.target === modal) {
-        hideAbout();
-    }
+window.addEventListener('click', event => {
+    if (event.target === document.getElementById('about-modal')) hideAbout();
 });
-
-// ============================================================================
-// END
-// ============================================================================
-
-console.log('🚀 AlgoraeOS (API Version) loaded successfully!');
