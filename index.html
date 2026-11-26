@@ -228,6 +228,50 @@
             </div>
         </section>
 
+        <!-- Paper, data and code availability -->
+        <section class="container" id="about-algoraeos">
+            <div class="card info-card">
+                <div class="card-header">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                    </svg>
+                    <h3>About AlgoraeOS</h3>
+                </div>
+                <p class="info-lead">
+                    AlgoraeOS is a biologically informed, attention-aware deep neural network developed by the
+                    <a href="https://vafaeelab.com/" target="_blank" rel="noopener">UNSW Biomedical AI Laboratory</a>
+                    in partnership with
+                    <a href="https://algoraepharma.com/algoraeos/" target="_blank" rel="noopener">Algorae Pharmaceuticals</a>.
+                    It predicts Bliss, Loewe, HSA and ZIP synergy together, with calibrated uncertainty, and was
+                    prospectively validated in vitro. This portal gives access to its predictions.
+                </p>
+
+                <div class="info-paper">
+                    <span class="info-label">Paper</span>
+                    <p class="info-title">Multimodal Deep Learning for Calibrated, Dose-Specific Drug Combination
+                        Repurposing: A Prospectively Validated AI Framework</p>
+                    <p class="info-authors">Heydari MJ, Lye B, Mansouri P, Marsland T, Pamulapati K, Vary R, Allen H,
+                        Simpson KJ, Lock JG, McKenna J, Vafaee F.
+                        Preprint: <a href="https://www.biorxiv.org/content/10.1101/2025.11.05.686895v2" target="_blank" rel="noopener">bioRxiv 10.1101/2025.11.05.686895</a></p>
+                </div>
+
+                <div class="info-grid">
+                    <div class="info-item">
+                        <h4>Data availability</h4>
+                        <p>Raw training data: <a href="https://drugcomb.fimm.fi" target="_blank" rel="noopener">DrugComb portal</a>.
+                            Curated and pre-processed data: <a href="https://github.com/VafaeeLab/AlgoraeOS" target="_blank" rel="noopener">AlgoraeOS GitHub repository</a>.
+                            Validation data: Supplementary Table 11 of the paper.</p>
+                    </div>
+                    <div class="info-item">
+                        <h4>Code availability</h4>
+                        <p>The full model implementation is proprietary. Model predictions are available through this
+                            portal for single and batch queries.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- About Modal -->
         <div id="about-modal" class="modal">
             <div class="modal-content">
@@ -259,7 +303,15 @@
         <!-- Footer -->
         <footer class="footer">
             <div class="container">
-                <p>AlgoraeOS • AI-Powered Combination Analysis</p>
+                <div class="footer-logos">
+                    <a href="https://algoraepharma.com/" target="_blank" rel="noopener"><img src="assets/algorae_logo.svg" alt="Algorae Pharmaceuticals" height="28"></a>
+                </div>
+                <p>AlgoraeOS • UNSW Biomedical AI Laboratory × Algorae Pharmaceuticals</p>
+                <p>
+                    <a href="https://www.biorxiv.org/content/10.1101/2025.11.05.686895v2" target="_blank" rel="noopener">Paper</a> ·
+                    <a href="https://github.com/VafaeeLab/AlgoraeOS" target="_blank" rel="noopener">Dataset</a> ·
+                    <a href="https://drugcomb.fimm.fi" target="_blank" rel="noopener">DrugComb</a>
+                </p>
                 <p>For research use only. Results should be validated experimentally.</p>
             </div>
         </footer>
