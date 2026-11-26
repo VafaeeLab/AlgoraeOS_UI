@@ -886,3 +886,14 @@ tr:hover {
     cursor: default;
     opacity: 0.6;
 }
+
+.ac-list li.ac-count {
+    position: sticky;
+    top: -0.25rem;
+    z-index: 1;
+    background: white;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+    font-size: 0.75rem;
+    opacity: 0.7;
+    cursor: default;
+}

@@ -151,11 +151,10 @@ function makeResult(d1, d2, cellIdx, row, swapped = false) {
 //   1  a word inside the name starts with it (e.g. "acid" -> "Folic acid")
 //   2  name contains it anywhere
 // ----------------------------------------------------------------------------
-const MAX_SUGGESTIONS = 50;
-
+// Every matching drug is listed (the list scrolls); a count is shown on top.
 function rankDrugs(options, query) {
     const q = query.trim().toLowerCase().replace(/^cid\s*:?\s*/, '');
-    if (!q) return options.slice(0, MAX_SUGGESTIONS).map(d => ({ d, rank: 0, at: -1 }));
+    if (!q) return options.map(d => ({ d, rank: 0, at: -1 }));
     const hits = [];
     for (const d of options) {
         const name = d.lower || (d.lower = d.name.toLowerCase());
@@ -169,13 +168,14 @@ function rankDrugs(options, query) {
         if (rank >= 0) hits.push({ d, rank, at });
     }
     hits.sort((a, b) => a.rank - b.rank || a.d.name.length - b.d.name.length || a.d.name.localeCompare(b.d.name));
-    return hits.slice(0, MAX_SUGGESTIONS);
+    return hits;
 }
 
 function attachAutocomplete(inputId, getOptions) {
     const input = document.getElementById(inputId);
     const list = document.getElementById(`${inputId}-suggest`);
     let items = [];
+    let optionEls = [];
     let active = -1;
 
     const close = () => {
@@ -186,8 +186,9 @@ function attachAutocomplete(inputId, getOptions) {
 
     const highlight = i => {
         active = i;
-        [...list.children].forEach((li, j) => li.classList.toggle('active', j === i));
-        if (list.children[i]) list.children[i].scrollIntoView({ block: 'nearest' });
+        while (i >= optionEls.length && optionEls.length < items.length) appendPage();
+        optionEls.forEach((li, j) => li.classList.toggle('active', j === i));
+        if (optionEls[i]) optionEls[i].scrollIntoView({ block: 'nearest' });
     };
 
     const pick = d => {
@@ -196,29 +197,56 @@ function attachAutocomplete(inputId, getOptions) {
         input.dispatchEvent(new Event('change'));
     };
 
-    const render = () => {
-        const q = input.value;
+    // Rows are added in pages as the list scrolls, so typing stays fast.
+    const PAGE = 100;
+    let qLen = 0;
+    const appendPage = () => {
+        const start = optionEls.length;
+        const page = items.slice(start, start + PAGE).map((it, k) => makeRow(it, start + k));
+        optionEls.push(...page);
+        list.append(...page);
+    };
+    list.addEventListener('scroll', () => {
+        if (optionEls.length < items.length && list.scrollTop + list.clientHeight > list.scrollHeight - 200) appendPage();
+    });
+
+    const makeRow = ({ d, at }, i) => {
+        const li = document.createElement('li');
+        li.setAttribute('role', 'option');
+        const name = document.createElement('span');
+        if (at >= 0 && qLen) {
+            const mark = document.createElement('mark');
+            mark.textContent = d.name.slice(at, at + qLen);
+            name.append(d.name.slice(0, at), mark, d.name.slice(at + qLen));
+        } else {
+            name.textContent = d.name;
+        }
+        const cid = document.createElement('span');
+        cid.className = 'ac-cid';
+        cid.textContent = `CID ${d.cid}`;
+        li.append(name, cid);
+        li.addEventListener('mousedown', e => { e.preventDefault(); pick(d); });
+        li.addEventListener('mousemove', () => active !== i && highlight(i));
+        return li;
+    };
+
+    // showAll: list every drug (used on focus, when the box still holds the previous choice).
+    const render = (showAll = false) => {
+        const q = showAll === true ? '' : input.value;
         items = rankDrugs(getOptions(), q);
-        const qLen = q.trim().replace(/^cid\s*:?\s*/i, '').length;
-        list.replaceChildren(...items.map(({ d, at }, i) => {
-            const li = document.createElement('li');
-            li.setAttribute('role', 'option');
-            const name = document.createElement('span');
-            if (at >= 0 && qLen) {
-                const mark = document.createElement('mark');
-                mark.textContent = d.name.slice(at, at + qLen);
-                name.append(d.name.slice(0, at), mark, d.name.slice(at + qLen));
-            } else {
-                name.textContent = d.name;
-            }
-            const cid = document.createElement('span');
-            cid.className = 'ac-cid';
-            cid.textContent = `CID ${d.cid}`;
-            li.append(name, cid);
-            li.addEventListener('mousedown', e => { e.preventDefault(); pick(d); });
-            li.addEventListener('mousemove', () => active !== i && highlight(i));
-            return li;
-        }));
+        qLen = q.trim().replace(/^cid\s*:?\s*/i, '').length;
+        optionEls = [];
+        const count = document.createElement('li');
+        count.className = 'ac-count';
+        count.setAttribute('aria-hidden', 'true');
+        const total = getOptions().length;
+        count.textContent = q.trim()
+            ? `${items.length.toLocaleString()} of ${total.toLocaleString()} drugs match`
+            : `${total.toLocaleString()} drugs, scroll or type to filter`;
+        count.addEventListener('mousedown', e => e.preventDefault());
+        list.replaceChildren(count);
+        list.scrollTop = 0;
+        appendPage();
         if (!items.length) {
             const li = document.createElement('li');
             li.className = 'ac-empty';
@@ -234,7 +262,7 @@ function attachAutocomplete(inputId, getOptions) {
     input.addEventListener('focus', () => {
         if (input.disabled) return;
         setTimeout(() => input.select(), 0); // typing replaces the previous choice (survives mouseup)
-        render();
+        render(/\(CID \d+\)$/.test(input.value));
     });
     input.addEventListener('blur', close);
     input.addEventListener('keydown', e => {
